@@ -1,0 +1,10 @@
+---
+docker_privileged_users: 
+  - docker
+  - julia
+
+# By default no modules should be installed.
+python_pip_modules: []
+
+#  update pip, using pip.
+python_pip_update: yes

@@ -1,0 +1,141 @@
+#!/usr/bin/env ansible-playbook
+
+- name: setup minikubes
+  hosts: all
+  become: yes
+  gather_facts: no
+  remote_user: julia
+
+  pre_tasks:
+    - name: pause
+      pause:
+        seconds: 60
+
+    - name: wait for the host to be available
+      wait_for:
+        port: 22
+
+  tasks:
+    ---
+    # tasks for python_pip
+
+    - name: Import assert.yml
+      ansible.builtin.import_tasks: assert.yml
+      run_once: yes
+      delegate_to: localhost
+
+    - name: Install python pip
+      ansible.builtin.package:
+        name: "{{ python_pip_packages }}"
+        state: present
+
+    - name: Configure pip proxy
+      community.general.ini_file:
+        path: /etc/pip.conf
+        section: global
+        option: index-url
+        value: "{{ python_pip_proxy }}"
+        mode: "0644"
+      when:
+        - python_pip_proxy is defined
+
+    - name: Trust hosts
+      community.general.ini_file:
+        path: /etc/pip.conf
+        section: global
+        option: trusted-host
+        value: "{{ python_pip_trusted_host }}"
+        mode: "0644"
+      when:
+        - python_pip_trusted_host is defined
+
+    - name: Update pip
+      ansible.builtin.pip:
+        name: "{{ python_pip_pip_package }}"
+        state: "{{ python_pip_pip_state }}"  # noqa package-latest
+        executable: "{{ python_pip_executable | default(omit) }}"
+      when:
+        - python_pip_update | bool
+
+    # - name: Update setuptools
+    #   ansible.builtin.pip:
+    #     name: setuptools
+    #     state: latest  # noqa package-latest
+    #     executable: "{{ python_pip_executable | default(omit) }}"
+    #   when:
+    #     - python_pip_update | bool
+
+    - name: Install requested modules
+      ansible.builtin.pip:
+        name: "{{ item.name }}"
+        state: "{{ item.state | default('present') }}"
+        version: "{{ item.version | default(omit) }}"
+        executable: "{{ python_pip_executable | default(omit) }}"
+      loop: "{{ python_pip_modules }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # tasks for docker
+    - name: Install docker
+      ansible.builtin.package:
+        name: "{{ docker_packages }}"
+        state: present
+
+    - name: Install docker pip packages
+      ansible.builtin.pip:
+        name: "{{ docker_pip_packages }}"
+        state: present
+
+    - name: Create privileged docker user group
+      ansible.builtin.group:
+        name: docker
+        state: present
+
+    - name: Add privileged users to the docker user group
+      ansible.builtin.user:
+        name: "{{ user }}"
+        groups: docker
+        append: yes
+      loop: "{{ docker_privileged_users }}"
+      loop_control:
+        loop_var: user
+      when:
+        - docker_privileged_users is defined
+
+    - name: Start and enable docker
+      ansible.builtin.service:
+        name: "{{ docker_service }}"
+        state: started
+        enabled: yes
+      notify:
+        - Change group for docker socket
+      when:
+        - ansible_connection not in [ "container", "docker", "community.docker.docker" ]
+    
+    # tasks for k8s
+    - name: install minikube
+      apt:
+        deb: "https://storage.googleapis.com/minikube/releases/latest/minikube_latest_amd64.deb"
+        state: present
+
+    - name: download helm
+      unarchive:
+        src: "https://get.helm.sh/helm-v3.5.4-linux-amd64.tar.gz"
+        remote_src: yes
+        dest: /tmp
+      notify:
+        - install helm
+
+    - name: install kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/v1.21.0/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: "0755"
+
+  handlers:
+    - name: install helm
+      copy:
+        src: /tmp/linux-amd64/helm
+        remote_src: yes
+        dest: /usr/local/bin/helm
+        mode: "0755"
